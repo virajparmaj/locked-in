@@ -17,11 +17,12 @@ export function registerSettingsHandlers(): void {
 
   ipcMain.handle('settings:update', (_, key: string, value: string) => {
     try {
-      db.updateSetting(key, value)
+      const normalizedValue = db.validateAndNormalizeSetting(key, value)
+      db.updateSetting(key, normalizedValue)
 
       // Sync login item setting when changed
       if (key === 'open_at_login') {
-        app.setLoginItemSettings({ openAtLogin: value === '1', openAsHidden: true })
+        app.setLoginItemSettings({ openAtLogin: normalizedValue === '1', openAsHidden: true })
       }
     } catch (err) {
       log.error('update failed', err)

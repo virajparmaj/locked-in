@@ -2,6 +2,8 @@ import { createContext, useContext, useState, useEffect, useCallback, type React
 import { api } from '@/lib/ipc'
 import type { Schedule, CreateScheduleInput, UpdateScheduleInput, SendResult } from '../../shared/types'
 
+const CONTACTS_CHANGED_EVENT = 'lockedin:contacts-changed'
+
 interface ScheduleContextValue {
   schedules: Schedule[]
   fireTimes: Record<string, string | null>
@@ -46,6 +48,12 @@ export function ScheduleProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const unsub = api.onScheduleExecuted(() => { refresh() })
     return unsub
+  }, [refresh])
+
+  useEffect(() => {
+    const handleContactsChanged = () => { refresh() }
+    window.addEventListener(CONTACTS_CHANGED_EVENT, handleContactsChanged)
+    return () => window.removeEventListener(CONTACTS_CHANGED_EVENT, handleContactsChanged)
   }, [refresh])
 
   const create = useCallback(async (data: CreateScheduleInput): Promise<Schedule> => {

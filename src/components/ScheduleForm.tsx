@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
@@ -8,6 +7,15 @@ import { Switch } from '@/components/ui/switch'
 import { api } from '@/lib/ipc'
 import { CalendarDays, AlertTriangle } from 'lucide-react'
 import { ExtendedScheduleDialog } from '@/components/ExtendedScheduleDialog'
+import { DatePickerPopover } from '@/components/DatePickerPopover'
+import { TimeRulerPicker } from '@/components/TimeRulerPicker'
+import {
+  formatTimeLabel,
+  isoToLocalDateTimeValue,
+  localDateTimeValueToIso,
+  parseLocalDateTimeValue,
+  replaceTimeInLocalDateTime
+} from '@/lib/schedule-picker'
 import type { Schedule, CreateScheduleInput, ScheduleType, Contact } from '../../shared/types'
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
@@ -30,7 +38,7 @@ function buildSummaryText(
   monthOfYear: number
 ): string {
   const day = dayOfMonth
-  const time = timeOfDay || '09:00'
+  const time = formatTimeLabel(timeOfDay || '09:00')
   if (scheduleType === 'quarterly') {
     const months = [0, 1, 2, 3].map(i => MONTHS[(monthOfYear + i * 3) % 12])
     return `${day}th of ${months.join(', ')} at ${time}`
@@ -55,14 +63,11 @@ interface ScheduleFormProps {
 
 export function ScheduleForm({ initial, defaultDate, contacts, onSubmit, onCancel }: ScheduleFormProps) {
   function getInitialScheduledAt(): string {
-    if (initial?.scheduledAt) return initial.scheduledAt
+    if (initial?.scheduledAt) return isoToLocalDateTimeValue(initial.scheduledAt)
     if (defaultDate) {
       const d = new Date(defaultDate)
       d.setHours(9, 0, 0, 0)
-      const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000)
-        .toISOString()
-        .slice(0, 16)
-      return local
+      return isoToLocalDateTimeValue(d.toISOString())
     }
     return ''
   }
@@ -88,18 +93,40 @@ export function ScheduleForm({ initial, defaultDate, contacts, onSubmit, onCance
   // Conflict detection
   const [conflicts, setConflicts] = useState<Schedule[]>([])
   const conflictDismissedRef = useRef(false)
+  const messageRef = useRef(message)
+  const messageTouchedRef = useRef(false)
+  const templateAppliedRef = useRef(false)
+
+  useEffect(() => {
+    messageRef.current = message
+  }, [message])
 
   useEffect(() => {
     if (initial?.scheduledAt) {
-      try {
-        const d = new Date(initial.scheduledAt)
-        const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000)
-          .toISOString()
-          .slice(0, 16)
-        setScheduledAt(local)
-      } catch {
-        setScheduledAt('')
-      }
+      setScheduledAt(isoToLocalDateTimeValue(initial.scheduledAt))
+    }
+  }, [initial])
+
+  useEffect(() => {
+    if (initial) return
+
+    let cancelled = false
+
+    void api.getSettings().then((settings) => {
+      if (cancelled) return
+      if (templateAppliedRef.current) return
+      if (messageTouchedRef.current) return
+      if (messageRef.current !== '') return
+      if (settings.defaultMessageTemplate === '') return
+
+      setMessage(settings.defaultMessageTemplate)
+      templateAppliedRef.current = true
+    }).catch(() => {
+      // Leave the message blank if settings cannot be loaded.
+    })
+
+    return () => {
+      cancelled = true
     }
   }, [initial])
 
@@ -115,8 +142,8 @@ export function ScheduleForm({ initial, defaultDate, contacts, onSubmit, onCance
       errs.scheduledAt = 'Select a date and time'
     }
     if (scheduleType === 'one_time' && scheduledAt) {
-      const d = new Date(scheduledAt)
-      if (d <= new Date()) {
+      const parsed = parseLocalDateTimeValue(scheduledAt)
+      if (!parsed || parsed <= new Date()) {
         errs.scheduledAt = 'Date must be in the future'
       }
     }
@@ -136,7 +163,7 @@ export function ScheduleForm({ initial, defaultDate, contacts, onSubmit, onCance
         const found = await api.checkConflicts({
           contactId,
           scheduleType,
-          scheduledAt: scheduleType === 'one_time' ? new Date(scheduledAt).toISOString() : null,
+          scheduledAt: scheduleType === 'one_time' ? localDateTimeValueToIso(scheduledAt) : null,
           timeOfDay: scheduleType !== 'one_time' ? timeOfDay : null,
           dayOfWeek: scheduleType === 'weekly' ? dayOfWeek : null,
           excludeId: initial?.id
@@ -160,7 +187,7 @@ export function ScheduleForm({ initial, defaultDate, contacts, onSubmit, onCance
       }
 
       if (scheduleType === 'one_time') {
-        data.scheduledAt = new Date(scheduledAt).toISOString()
+        data.scheduledAt = localDateTimeValueToIso(scheduledAt) ?? undefined
       } else if (scheduleType === 'weekly') {
         data.timeOfDay = timeOfDay
         data.dayOfWeek = dayOfWeek
@@ -207,7 +234,10 @@ export function ScheduleForm({ initial, defaultDate, contacts, onSubmit, onCance
             placeholder="Type your message..."
             rows={4}
             value={message}
-            onChange={(e) => setMessage(e.target.value)}
+            onChange={(e) => {
+              messageTouchedRef.current = true
+              setMessage(e.target.value)
+            }}
           />
           <div className="flex justify-between text-xs text-muted-foreground">
             {errors.message && <p className="text-destructive">{errors.message}</p>}
@@ -215,30 +245,66 @@ export function ScheduleForm({ initial, defaultDate, contacts, onSubmit, onCance
           </div>
         </div>
 
-        {/* Schedule Type */}
-        <div className="space-y-2">
-          <Label>Schedule Type</Label>
-          <Select
-            value={scheduleType}
-            onValueChange={(v) => {
-              setScheduleType(v as ScheduleType)
-              if (!isExtendedType(v)) setExtConfigured(false)
-            }}
-          >
-            <option value="one_time">One-time</option>
-            <option value="weekly">Weekly</option>
-            <option disabled value="">-- Extended --</option>
-            <option value="quarterly">Quarterly</option>
-            <option value="half_yearly">Half-yearly</option>
-            <option value="yearly">Yearly</option>
-          </Select>
-        </div>
+        {scheduleType === 'one_time' ? (
+          <div className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Schedule Type</Label>
+                <Select
+                  className="h-12 rounded-2xl border-border/70 bg-card/70 px-4 text-base shadow-[0_1px_0_rgba(255,255,255,0.02)_inset]"
+                  value={scheduleType}
+                  onValueChange={(v) => {
+                    setScheduleType(v as ScheduleType)
+                    if (!isExtendedType(v)) setExtConfigured(false)
+                  }}
+                >
+                  <option value="one_time">One-time</option>
+                  <option value="weekly">Weekly</option>
+                  <option disabled value="">-- Extended --</option>
+                  <option value="quarterly">Quarterly</option>
+                  <option value="half_yearly">Half-yearly</option>
+                  <option value="yearly">Yearly</option>
+                </Select>
+              </div>
 
-        {scheduleType === 'one_time' && (
+              <div className="space-y-2">
+                <Label htmlFor="schedule-date">Date</Label>
+                <DatePickerPopover
+                  id="schedule-date"
+                  value={scheduledAt}
+                  onChange={setScheduledAt}
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="schedule-time">Time</Label>
+              <TimeRulerPicker
+                id="schedule-time"
+                value={scheduledAt ? (scheduledAt.split('T')[1] || '09:00') : '09:00'}
+                onChange={(value) => setScheduledAt((current) => replaceTimeInLocalDateTime(current, value))}
+              />
+              {errors.scheduledAt && <p className="text-xs text-destructive">{errors.scheduledAt}</p>}
+            </div>
+          </div>
+        ) : (
           <div className="space-y-2">
-            <Label htmlFor="datetime">Date & Time</Label>
-            <Input id="datetime" type="datetime-local" value={scheduledAt} onChange={(e) => setScheduledAt(e.target.value)} />
-            {errors.scheduledAt && <p className="text-xs text-destructive">{errors.scheduledAt}</p>}
+            <Label>Schedule Type</Label>
+            <Select
+              className="h-12 rounded-2xl border-border/70 bg-card/70 px-4 text-base shadow-[0_1px_0_rgba(255,255,255,0.02)_inset]"
+              value={scheduleType}
+              onValueChange={(v) => {
+                setScheduleType(v as ScheduleType)
+                if (!isExtendedType(v)) setExtConfigured(false)
+              }}
+            >
+              <option value="one_time">One-time</option>
+              <option value="weekly">Weekly</option>
+              <option disabled value="">-- Extended --</option>
+              <option value="quarterly">Quarterly</option>
+              <option value="half_yearly">Half-yearly</option>
+              <option value="yearly">Yearly</option>
+            </Select>
           </div>
         )}
 
@@ -246,7 +312,7 @@ export function ScheduleForm({ initial, defaultDate, contacts, onSubmit, onCance
           <>
             <div className="space-y-2">
               <Label htmlFor="time">Time</Label>
-              <Input id="time" type="time" value={timeOfDay} onChange={(e) => setTimeOfDay(e.target.value)} />
+              <TimeRulerPicker id="time" value={timeOfDay} onChange={setTimeOfDay} />
             </div>
             <div className="space-y-2">
               <Label>Day of Week</Label>

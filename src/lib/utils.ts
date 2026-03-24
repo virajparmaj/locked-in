@@ -1,6 +1,7 @@
 import { type ClassValue, clsx } from 'clsx'
 import { twMerge } from 'tailwind-merge'
 import { differenceInDays } from 'date-fns'
+import { extractLinkedInSlug } from '@shared/linkedin'
 
 export function cn(...inputs: ClassValue[]): string {
   return twMerge(clsx(inputs))
@@ -80,8 +81,7 @@ export function getTimelineBucket(nextRunAt: string | null | undefined): Timelin
 
 /** Extract LinkedIn slug from a profile URL */
 export function extractSlug(url: string): string {
-  const match = url.match(/linkedin\.com\/in\/([^\/?#]+)/)
-  return match ? match[1] : ''
+  return extractLinkedInSlug(url)
 }
 
 /** Format schedule type for display */

@@ -1,9 +1,10 @@
 import * as schedule from 'node-schedule'
-import { getAllSchedules, getScheduleById, getContactById, getSettings, insertRunLog, toggleSchedule, updateLastFiredAt } from './db.service'
+import { getAllSchedules, getScheduleById, getContactById, getLogsBySchedule, getSettings, insertRunLog, toggleSchedule, updateLastFiredAt } from './db.service'
 import { sendLinkedInMessage } from './linkedin.service'
 import { runAppleScript } from '../utils/applescript'
 import { createLogger } from '../utils/logger'
-import type { Schedule, RunLog } from '../../shared/types'
+import { normalizeLinkedInProfileUrl } from '@shared/linkedin'
+import type { Schedule, RunLog, RunStatus } from '../../shared/types'
 
 const log = createLogger('scheduler')
 
@@ -21,6 +22,24 @@ let onExecutedCallback: ((log: RunLog) => void) | null = null
 
 // Retry backoff intervals in ms — more conservative for LinkedIn
 const RETRY_BACKOFF_MS = [15_000, 45_000, 120_000]
+
+type ExecutionContext = 'scheduled' | 'catch_up' | 'retry' | 'manual_test'
+
+interface ExecutionRequest {
+  context: ExecutionContext
+  scheduledTime?: string
+  retryAttempt?: number
+  retryOf?: string
+}
+
+interface ExecutionOutcome {
+  status: RunStatus
+  errorMessage?: string
+  executionDurationMs?: number
+  retryable?: boolean
+}
+
+type PastDueOneTimeAction = 'missed' | 'recover' | 'consume'
 
 // Errors that should not be retried (non-transient)
 const NON_RETRYABLE_PATTERNS = [
@@ -43,31 +62,50 @@ export function setOnExecutedCallback(cb: (log: RunLog) => void): void {
  */
 export function initScheduler(): void {
   const schedules = getAllSchedules()
-  const missedRecurring: Schedule[] = []
+  const missedRecurring: Array<{ schedule: Schedule, expected: Date }> = []
+  const now = new Date()
+  const maxRetries = getSettings().maxRetries
 
   for (const s of schedules) {
     if (!s.enabled) continue
 
-    // Detect missed one-time schedules (past date, still enabled = app was closed)
+    // Detect past-due one-time schedules and either mark them missed, recover them,
+    // or consume stale enabled state left behind by older scheduler bugs.
     if (s.scheduleType === 'one_time' && s.scheduledAt) {
       const fireDate = new Date(s.scheduledAt)
-      if (fireDate <= new Date()) {
-        insertRunLog(s.id, 'skipped', 'Missed: app was not running at scheduled time', undefined, s.scheduledAt)
+      if (fireDate <= now) {
+        const action = getPastDueOneTimeAction(s, getLogsBySchedule(s.id), maxRetries)
+
+        if (action === 'recover') {
+          log.info(`Recovering past-due one-time schedule ${s.id}`)
+          executeJob(s.id, { context: 'catch_up', scheduledTime: s.scheduledAt }).catch((err) => {
+            log.error(`Failed one-time recovery execution for ${s.id}`, err)
+          })
+          continue
+        }
+
+        if (action === 'missed') {
+          insertRunLog(s.id, 'skipped', 'Missed: app was not running at scheduled time', undefined, s.scheduledAt)
+          log.info(`Missed one-time schedule ${s.id} — marked as skipped`)
+        } else {
+          log.info(`Past-due one-time schedule ${s.id} already reached a terminal outcome — disabling stale enabled state`)
+        }
+
         toggleSchedule(s.id, false)
-        log.info(`Missed one-time schedule ${s.id} — marked as skipped`)
         continue
       }
     }
 
-    // Collect recurring schedules that may have missed runs
     if (s.scheduleType !== 'one_time') {
-      missedRecurring.push(s)
+      const expected = getMostRecentExpectedFire(s, now)
+      if (expected && shouldCatchUpRecurringSchedule(s, expected)) {
+        missedRecurring.push({ schedule: s, expected })
+      }
     }
 
     registerJob(s)
   }
 
-  // Detect and catch up missed recurring runs
   detectAndCatchUpMissedRuns(missedRecurring)
 
   log.info(`Scheduler initialized: ${jobs.size} active jobs`)
@@ -77,24 +115,16 @@ export function initScheduler(): void {
  * For each recurring schedule, check if the most recent expected fire time
  * is after last_fired_at. If so, fire once immediately to catch up.
  */
-function detectAndCatchUpMissedRuns(schedules: Schedule[]): void {
-  const now = new Date()
-
-  for (const s of schedules) {
-    const expected = getMostRecentExpectedFire(s, now)
-    if (!expected) continue
-
+function detectAndCatchUpMissedRuns(schedules: Array<{ schedule: Schedule, expected: Date }>): void {
+  for (const { schedule: s, expected } of schedules) {
     const lastFired = s.lastFiredAt ? new Date(s.lastFiredAt) : null
+    const missedCount = lastFired ? 'at least 1' : 'unknown'
+    insertRunLog(s.id, 'skipped', `Missed ${missedCount} run(s): app was not running`, undefined, expected.toISOString())
+    log.info(`Catching up missed recurring schedule ${s.id} — firing now`)
 
-    if (!lastFired || lastFired < expected) {
-      const missedCount = lastFired ? 'at least 1' : 'unknown'
-      insertRunLog(s.id, 'skipped', `Missed ${missedCount} run(s): app was not running`, undefined, expected.toISOString())
-      log.info(`Catching up missed recurring schedule ${s.id} — firing now`)
-
-      executeJob(s.id).catch((err) => {
-        log.error(`Failed catch-up execution for ${s.id}`, err)
-      })
-    }
+    executeJob(s.id, { context: 'catch_up', scheduledTime: expected.toISOString() }).catch((err) => {
+      log.error(`Failed catch-up execution for ${s.id}`, err)
+    })
   }
 }
 
@@ -149,6 +179,48 @@ export function getMostRecentExpectedFire(s: Schedule, now: Date): Date | null {
   }
 
   return null
+}
+
+function shouldCatchUpRecurringSchedule(s: Schedule, expected: Date): boolean {
+  const createdAt = new Date(s.createdAt)
+  if (expected < createdAt) {
+    return false
+  }
+
+  const lastFired = s.lastFiredAt ? new Date(s.lastFiredAt) : null
+  return !lastFired || lastFired < expected
+}
+
+function getPastDueOneTimeAction(s: Schedule, logs: RunLog[], maxRetries: number): PastDueOneTimeAction {
+  if (!s.scheduledAt) {
+    return 'missed'
+  }
+
+  const slotLogs = logs
+    .filter((entry) => entry.scheduledTime === s.scheduledAt)
+    .sort((a, b) => new Date(b.firedAt).getTime() - new Date(a.firedAt).getTime())
+
+  if (slotLogs.length === 0) {
+    return 'missed'
+  }
+
+  return isTerminalLoggedOutcome(slotLogs[0], maxRetries) ? 'consume' : 'recover'
+}
+
+function isTerminalLoggedOutcome(logEntry: RunLog, maxRetries: number): boolean {
+  if (logEntry.status === 'success' || logEntry.status === 'dry_run') {
+    return true
+  }
+
+  if (logEntry.status !== 'failed') {
+    return false
+  }
+
+  if (!logEntry.errorMessage || isNonRetryableError(logEntry.errorMessage)) {
+    return true
+  }
+
+  return (logEntry.retryAttempt ?? 0) >= maxRetries
 }
 
 /**
@@ -221,8 +293,9 @@ export function registerJob(s: Schedule): void {
     return
   }
 
-  const job = schedule.scheduleJob(rule, async () => {
-    await executeJob(s.id)
+  const job = schedule.scheduleJob(rule, async (fireDate: Date) => {
+    const scheduledTime = fireDate instanceof Date ? fireDate.toISOString() : new Date().toISOString()
+    await executeJob(s.id, { context: 'scheduled', scheduledTime })
   })
 
   if (job) {
@@ -266,33 +339,72 @@ function isNonRetryableError(errorMsg: string): boolean {
 
 function scheduleRetry(
   scheduleId: string,
-  attempt: number,
+  request: ExecutionRequest,
   originalLogId: string,
   scheduledTime: string
 ): void {
   const settings = getSettings()
   const maxRetries = settings.maxRetries
+  const retryAttempt = (request.retryAttempt ?? 0) + 1
+  const delayMs = RETRY_BACKOFF_MS[retryAttempt - 1] ?? RETRY_BACKOFF_MS[RETRY_BACKOFF_MS.length - 1]
+  log.info(`Schedule ${scheduleId}: retry ${retryAttempt}/${maxRetries} in ${delayMs}ms`)
 
-  if (attempt >= maxRetries) {
-    const entry = insertRunLog(
-      scheduleId, 'failed',
-      `Gave up after ${maxRetries} retries`,
-      undefined, scheduledTime, attempt
-    )
-    if (onExecutedCallback) onExecutedCallback(entry)
-    log.warn(`Schedule ${scheduleId}: gave up after ${maxRetries} retries`)
-    return
-  }
-
-  const delayMs = RETRY_BACKOFF_MS[attempt] ?? RETRY_BACKOFF_MS[RETRY_BACKOFF_MS.length - 1]
-  log.info(`Schedule ${scheduleId}: retry ${attempt + 1}/${maxRetries} in ${delayMs}ms`)
+  clearPendingRetry(scheduleId)
 
   const timeout = setTimeout(async () => {
     pendingRetries.delete(scheduleId)
-    await executeJob(scheduleId, attempt, originalLogId, scheduledTime)
+    await executeJob(scheduleId, {
+      context: 'retry',
+      retryAttempt,
+      retryOf: originalLogId,
+      scheduledTime
+    })
   }, delayMs)
 
   pendingRetries.set(scheduleId, timeout)
+}
+
+function isRealExecutionContext(context: ExecutionContext): boolean {
+  return context !== 'manual_test'
+}
+
+function getRetryAttempt(request: ExecutionRequest): number {
+  return request.retryAttempt ?? 0
+}
+
+function getScheduledTime(request: ExecutionRequest): string | undefined {
+  if (request.context === 'manual_test') {
+    return undefined
+  }
+
+  return request.scheduledTime ?? new Date().toISOString()
+}
+
+function shouldScheduleRetry(request: ExecutionRequest, outcome: ExecutionOutcome, maxRetries: number): boolean {
+  return isRealExecutionContext(request.context)
+    && outcome.status === 'failed'
+    && Boolean(outcome.retryable)
+    && getRetryAttempt(request) < maxRetries
+}
+
+function isTerminalOutcome(request: ExecutionRequest, outcome: ExecutionOutcome, maxRetries: number): boolean {
+  if (!isRealExecutionContext(request.context)) {
+    return false
+  }
+
+  if (outcome.status === 'success' || outcome.status === 'dry_run') {
+    return true
+  }
+
+  if (outcome.status !== 'failed') {
+    return false
+  }
+
+  return !shouldScheduleRetry(request, outcome, maxRetries)
+}
+
+function shouldConsumeOneTimeSchedule(scheduleRecord: Schedule, request: ExecutionRequest, outcome: ExecutionOutcome, maxRetries: number): boolean {
+  return scheduleRecord.scheduleType === 'one_time' && isTerminalOutcome(request, outcome, maxRetries)
 }
 
 /**
@@ -300,9 +412,7 @@ function scheduleRetry(
  */
 async function executeJob(
   scheduleId: string,
-  retryAttempt = 0,
-  retryOf?: string,
-  existingScheduledTime?: string
+  request: ExecutionRequest
 ): Promise<RunLog | null> {
   if (executing.has(scheduleId)) {
     log.warn(`Schedule ${scheduleId} is already executing, skipping duplicate`)
@@ -314,26 +424,31 @@ async function executeJob(
     const s = getScheduleById(scheduleId)
     if (!s) return null
 
-    const scheduledTime = existingScheduledTime || new Date().toISOString()
+    const scheduledTime = getScheduledTime(request)
+    const retryAttempt = getRetryAttempt(request)
+    const maxRetries = getSettings().maxRetries
 
-    if (!s.enabled) {
+    if (request.context !== 'manual_test' && !s.enabled) {
       const entry = insertRunLog(scheduleId, 'skipped', 'Schedule is disabled', undefined, scheduledTime)
       if (onExecutedCallback) onExecutedCallback(entry)
       return entry
     }
 
-    // Look up contact to get LinkedIn slug
+    // Look up contact to get the canonical LinkedIn profile URL.
     const contact = getContactById(s.contactId)
     if (!contact) {
-      const entry = insertRunLog(scheduleId, 'failed', 'Contact not found', undefined, scheduledTime, retryAttempt, retryOf)
-      if (onExecutedCallback) onExecutedCallback(entry)
-      return entry
+      return persistOutcome(s, request, maxRetries, {
+        status: 'failed',
+        errorMessage: 'Contact not found'
+      })
     }
 
-    if (!contact.linkedinSlug) {
-      const entry = insertRunLog(scheduleId, 'failed', 'Contact has no LinkedIn slug', undefined, scheduledTime, retryAttempt, retryOf)
-      if (onExecutedCallback) onExecutedCallback(entry)
-      return entry
+    const profileUrl = normalizeLinkedInProfileUrl(contact.linkedinUrl)
+    if (!profileUrl) {
+      return persistOutcome(s, request, maxRetries, {
+        status: 'failed',
+        errorMessage: 'Contact has no valid LinkedIn profile URL'
+      })
     }
 
     // Check if screen is locked
@@ -346,16 +461,16 @@ async function executeJob(
     }
 
     if (screenLocked) {
-      const entry = insertRunLog(scheduleId, 'skipped', 'Screen locked: cannot send via AppleScript', undefined, scheduledTime, retryAttempt, retryOf)
-      updateLastFiredAt(scheduleId)
-      if (onExecutedCallback) onExecutedCallback(entry)
-      return entry
+      return persistOutcome(s, request, maxRetries, {
+        status: 'skipped',
+        errorMessage: 'Screen locked: cannot send via AppleScript'
+      })
     }
 
-    log.info(`Executing ${scheduleId} (${s.scheduleType}) → ${contact.linkedinSlug}${s.dryRun ? ' [dry-run]' : ''}${retryAttempt > 0 ? ` [retry ${retryAttempt}]` : ''}`)
+    log.info(`Executing ${scheduleId} (${s.scheduleType}) → ${profileUrl}${s.dryRun ? ' [dry-run]' : ''}${retryAttempt > 0 ? ` [retry ${retryAttempt}]` : ''}`)
 
     const startTime = Date.now()
-    const result = await sendLinkedInMessage(contact.linkedinSlug, s.message, s.dryRun)
+    const result = await sendLinkedInMessage(profileUrl, s.message, s.dryRun)
     const durationMs = Date.now() - startTime
 
     let status: 'success' | 'failed' | 'dry_run'
@@ -369,44 +484,70 @@ async function executeJob(
 
     log.info(`Execution ${scheduleId} → ${status} (${durationMs}ms)${result.error ? ` error: ${result.error}` : ''}`)
 
-    const entry = insertRunLog(scheduleId, status, result.error, durationMs, scheduledTime, retryAttempt, retryOf)
-    updateLastFiredAt(scheduleId)
-
-    // Auto-disable one-time schedules after any execution attempt
-    if (s.scheduleType === 'one_time') {
-      toggleSchedule(s.id, false)
-      cancelJob(s.id)
-    }
-
-    if (onExecutedCallback) onExecutedCallback(entry)
-
-    // Schedule retry on failure (if retryable and under limit)
-    if (status === 'failed' && result.error && !isNonRetryableError(result.error)) {
-      scheduleRetry(scheduleId, retryAttempt + 1, retryOf || entry.id, scheduledTime)
-    }
-
-    return entry
+    return persistOutcome(s, request, maxRetries, {
+      status,
+      errorMessage: result.error,
+      executionDurationMs: durationMs,
+      retryable: status === 'failed' && typeof result.error === 'string' && !isNonRetryableError(result.error)
+    })
   } finally {
     executing.delete(scheduleId)
   }
 }
 
 export async function testSendSchedule(scheduleId: string): Promise<RunLog | null> {
-  clearPendingRetry(scheduleId)
-  return executeJob(scheduleId)
+  return executeJob(scheduleId, { context: 'manual_test' })
+}
+
+function persistOutcome(
+  scheduleRecord: Schedule,
+  request: ExecutionRequest,
+  maxRetries: number,
+  outcome: ExecutionOutcome
+): RunLog {
+  const entry = insertRunLog(
+    scheduleRecord.id,
+    outcome.status,
+    outcome.errorMessage,
+    outcome.executionDurationMs,
+    getScheduledTime(request),
+    getRetryAttempt(request),
+    request.retryOf
+  )
+
+  if (onExecutedCallback) {
+    onExecutedCallback(entry)
+  }
+
+  const scheduledTime = entry.scheduledTime
+  if (shouldScheduleRetry(request, outcome, maxRetries) && scheduledTime) {
+    scheduleRetry(scheduleRecord.id, request, request.retryOf || entry.id, scheduledTime)
+    return entry
+  }
+
+  if (isTerminalOutcome(request, outcome, maxRetries)) {
+    updateLastFiredAt(scheduleRecord.id)
+  }
+
+  if (shouldConsumeOneTimeSchedule(scheduleRecord, request, outcome, maxRetries)) {
+    toggleSchedule(scheduleRecord.id, false)
+    cancelJob(scheduleRecord.id)
+  }
+
+  return entry
 }
 
 export function getNextFireTime(scheduleId: string): Date | null {
   const job = jobs.get(scheduleId)
   if (!job) return null
-  return job.nextInvocation()?.toDate() ?? null
+  return job.nextInvocation()
 }
 
 export function getAllNextFireTimes(): Record<string, string | null> {
   const result: Record<string, string | null> = {}
   for (const [id, job] of jobs) {
     const next = job.nextInvocation()
-    result[id] = next ? next.toDate().toISOString() : null
+    result[id] = next ? next.toISOString() : null
   }
   return result
 }

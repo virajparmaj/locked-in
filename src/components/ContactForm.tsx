@@ -4,6 +4,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
 import { extractSlug } from '@/lib/utils'
+import { normalizeLinkedInProfileUrl } from '@shared/linkedin'
 import type { Contact, CreateContactInput } from '../../shared/types'
 
 interface ContactFormProps {
@@ -12,15 +13,39 @@ interface ContactFormProps {
   onCancel: () => void
 }
 
+function getContactFormState(initial?: Contact | null) {
+  return {
+    name: initial?.name ?? '',
+    linkedinUrl: initial?.linkedinUrl ?? '',
+    company: initial?.company ?? '',
+    notes: initial?.notes ?? '',
+    tags: initial?.tags.join(', ') ?? '',
+    slug: initial?.linkedinSlug ?? ''
+  }
+}
+
 export function ContactForm({ initial, onSubmit, onCancel }: ContactFormProps) {
-  const [name, setName] = useState(initial?.name || '')
-  const [linkedinUrl, setLinkedinUrl] = useState(initial?.linkedinUrl || '')
-  const [company, setCompany] = useState(initial?.company || '')
-  const [notes, setNotes] = useState(initial?.notes || '')
-  const [tags, setTags] = useState(initial?.tags.join(', ') || '')
-  const [slug, setSlug] = useState(initial?.linkedinSlug || '')
+  const [name, setName] = useState(() => getContactFormState(initial).name)
+  const [linkedinUrl, setLinkedinUrl] = useState(() => getContactFormState(initial).linkedinUrl)
+  const [company, setCompany] = useState(() => getContactFormState(initial).company)
+  const [notes, setNotes] = useState(() => getContactFormState(initial).notes)
+  const [tags, setTags] = useState(() => getContactFormState(initial).tags)
+  const [slug, setSlug] = useState(() => getContactFormState(initial).slug)
+  const normalizedUrlPreview = normalizeLinkedInProfileUrl(linkedinUrl)
   const [submitting, setSubmitting] = useState(false)
   const [errors, setErrors] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    const next = getContactFormState(initial)
+    setName(next.name)
+    setLinkedinUrl(next.linkedinUrl)
+    setCompany(next.company)
+    setNotes(next.notes)
+    setTags(next.tags)
+    setSlug(next.slug)
+    setSubmitting(false)
+    setErrors({})
+  }, [initial?.id])
 
   // Live slug extraction
   useEffect(() => {
@@ -74,8 +99,13 @@ export function ContactForm({ initial, onSubmit, onCancel }: ContactFormProps) {
           onChange={(e) => setLinkedinUrl(e.target.value)}
         />
         {slug && (
-          <p className="text-xs text-muted-foreground">Slug: <span className="font-mono text-primary">{slug}</span></p>
+          <p className="text-xs text-muted-foreground">
+            Profile detected: <span className="font-mono text-primary">{normalizedUrlPreview}</span>
+          </p>
         )}
+        <p className="text-xs text-muted-foreground">
+          LockedIn opens this profile in your browser, clicks <span className="font-medium">Message</span>, then continues from the compose box.
+        </p>
         {errors.linkedinUrl && <p className="text-xs text-destructive">{errors.linkedinUrl}</p>}
       </div>
 

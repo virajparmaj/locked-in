@@ -25,7 +25,8 @@ export function Contacts() {
         c.name.toLowerCase().includes(q) ||
         c.company.toLowerCase().includes(q) ||
         c.tags.some(t => t.toLowerCase().includes(q)) ||
-        c.linkedinSlug.toLowerCase().includes(q)
+        c.linkedinSlug.toLowerCase().includes(q) ||
+        c.linkedinUrl.toLowerCase().includes(q)
     )
   }, [contacts, searchQuery])
 

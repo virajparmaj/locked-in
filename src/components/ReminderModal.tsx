@@ -17,6 +17,7 @@ export function ReminderModal({ open, onOpenChange, reminder, contacts, onSubmit
         <DialogTitle>{reminder ? 'Edit Reminder' : 'New Reminder'}</DialogTitle>
       </DialogHeader>
       <ReminderForm
+        key={reminder?.id ?? 'new'}
         initial={reminder}
         contacts={contacts}
         onSubmit={async (data) => {

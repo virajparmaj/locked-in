@@ -15,20 +15,54 @@ function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
 
 type ElectronAPI = typeof window.api
 
-export const api = new Proxy(window.api, {
-  get(target, prop, receiver) {
-    const value = Reflect.get(target, prop, receiver)
-    if (typeof value !== 'function') return value
+export function createIpcApi(rawApi: ElectronAPI): ElectronAPI {
+  return {
+    // Contacts
+    getContacts: () => withTimeout(rawApi.getContacts(), 'getContacts'),
+    getContact: (id) => withTimeout(rawApi.getContact(id), 'getContact'),
+    createContact: (data) => withTimeout(rawApi.createContact(data), 'createContact'),
+    updateContact: (id, data) => withTimeout(rawApi.updateContact(id, data), 'updateContact'),
+    deleteContact: (id) => withTimeout(rawApi.deleteContact(id), 'deleteContact'),
+    searchContacts: (query) => withTimeout(rawApi.searchContacts(query), 'searchContacts'),
 
-    // Don't wrap event listeners (they return unsubscribe functions, not promises)
-    if (typeof prop === 'string' && prop.startsWith('on')) return value
+    // Schedules
+    getSchedules: () => withTimeout(rawApi.getSchedules(), 'getSchedules'),
+    getSchedule: (id) => withTimeout(rawApi.getSchedule(id), 'getSchedule'),
+    getSchedulesByContact: (contactId) => withTimeout(rawApi.getSchedulesByContact(contactId), 'getSchedulesByContact'),
+    createSchedule: (data) => withTimeout(rawApi.createSchedule(data), 'createSchedule'),
+    updateSchedule: (id, data) => withTimeout(rawApi.updateSchedule(id, data), 'updateSchedule'),
+    deleteSchedule: (id) => withTimeout(rawApi.deleteSchedule(id), 'deleteSchedule'),
+    toggleSchedule: (id, enabled) => withTimeout(rawApi.toggleSchedule(id, enabled), 'toggleSchedule'),
+    testSend: (id) => withTimeout(rawApi.testSend(id), 'testSend'),
+    getNextFireTimes: () => withTimeout(rawApi.getNextFireTimes(), 'getNextFireTimes'),
+    checkConflicts: (data) => withTimeout(rawApi.checkConflicts(data), 'checkConflicts'),
 
-    return (...args: unknown[]) => {
-      const result = value.apply(target, args)
-      if (result && typeof result.then === 'function') {
-        return withTimeout(result, String(prop))
-      }
-      return result
-    }
+    // Reminders
+    getReminders: () => withTimeout(rawApi.getReminders(), 'getReminders'),
+    createReminder: (data) => withTimeout(rawApi.createReminder(data), 'createReminder'),
+    updateReminder: (id, data) => withTimeout(rawApi.updateReminder(id, data), 'updateReminder'),
+    deleteReminder: (id) => withTimeout(rawApi.deleteReminder(id), 'deleteReminder'),
+    snoozeReminder: (id, until) => withTimeout(rawApi.snoozeReminder(id, until), 'snoozeReminder'),
+    openMessageCompose: (contactId) => withTimeout(rawApi.openMessageCompose(contactId), 'openMessageCompose'),
+
+    // Logs
+    getLogs: (limit) => withTimeout(rawApi.getLogs(limit), 'getLogs'),
+    getLogsBySchedule: (scheduleId) => withTimeout(rawApi.getLogsBySchedule(scheduleId), 'getLogsBySchedule'),
+    clearLogs: (olderThanDays) => withTimeout(rawApi.clearLogs(olderThanDays), 'clearLogs'),
+
+    // Settings
+    getSettings: () => withTimeout(rawApi.getSettings(), 'getSettings'),
+    updateSetting: (key, value) => withTimeout(rawApi.updateSetting(key, value), 'updateSetting'),
+
+    // System
+    checkChromeAccess: () => withTimeout(rawApi.checkChromeAccess(), 'checkChromeAccess'),
+    openLinkedInInChrome: () => withTimeout(rawApi.openLinkedInInChrome(), 'openLinkedInInChrome'),
+
+    // Events are pass-through (they return unsubscribe functions, not promises)
+    onScheduleExecuted: (callback) => rawApi.onScheduleExecuted(callback),
+    onReminderTriggered: (callback) => rawApi.onReminderTriggered(callback)
   }
-}) as ElectronAPI
+}
+
+export const api: ElectronAPI = createIpcApi(window.api)
+Object.freeze(api)

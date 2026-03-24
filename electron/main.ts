@@ -1,6 +1,6 @@
 import { app, BrowserWindow, shell, powerMonitor, Notification, Tray, Menu, nativeImage } from 'electron'
 import { join } from 'path'
-import { initDb, closeDb, getSettings } from './services/db.service'
+import { initDb, closeDb, getSettings, getScheduleById, getContactById } from './services/db.service'
 import { initScheduler, setOnExecutedCallback, shutdownScheduler, resyncAfterWake } from './services/scheduler.service'
 import { initReminders, setOnReminderCallback, shutdownReminders, resyncReminders } from './services/reminder.service'
 import { registerAllHandlers } from './ipc/handlers'
@@ -36,13 +36,47 @@ function getResourcePath(...segments: string[]): string {
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
+const DEFAULT_CONTACT_LABEL = 'saved contact'
+const DEFAULT_REMINDER_LABEL = 'your contact'
+const NOTIFICATION_TEXT_LIMIT = 120
 
-function createWindow(): void {
+function firstNonEmpty(...values: Array<string | null | undefined>): string | null {
+  for (const value of values) {
+    const normalized = value?.trim()
+    if (normalized) return normalized
+  }
+  return null
+}
+
+function truncateForNotification(value: string | null | undefined, maxLength = NOTIFICATION_TEXT_LIMIT): string | null {
+  const normalized = value?.replace(/\s+/g, ' ').trim()
+  if (!normalized) return null
+  if (normalized.length <= maxLength) return normalized
+  return `${normalized.slice(0, maxLength - 1).trimEnd()}…`
+}
+
+function wasOpenedHiddenAtLogin(): boolean {
+  const loginItemSettings = app.getLoginItemSettings()
+  return loginItemSettings.wasOpenedAtLogin && loginItemSettings.wasOpenedAsHidden
+}
+
+function getMainWindow(): BrowserWindow | null {
+  if (mainWindow?.isDestroyed()) {
+    mainWindow = null
+  }
+  return mainWindow
+}
+
+function createWindow(): BrowserWindow {
+  const existingWindow = getMainWindow()
+  if (existingWindow) return existingWindow
+
   mainWindow = new BrowserWindow({
     width: 1000,
     height: 700,
     minWidth: 800,
     minHeight: 600,
+    show: false,
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 15, y: 15 },
     icon: getResourcePath('icon.png'),
@@ -62,9 +96,13 @@ function createWindow(): void {
   mainWindow.on('close', (e) => {
     if (!isQuitting) {
       e.preventDefault()
-      mainWindow?.hide()
-      log.info('Window hidden (scheduler still running in background)')
+      hideMainWindow()
     }
+  })
+
+  mainWindow.on('closed', () => {
+    log.info('Main window closed')
+    mainWindow = null
   })
 
   // Load renderer
@@ -72,6 +110,116 @@ function createWindow(): void {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+  }
+
+  return mainWindow
+}
+
+function ensureMainWindow(): BrowserWindow {
+  return getMainWindow() ?? createWindow()
+}
+
+function showMainWindow(): void {
+  const window = ensureMainWindow()
+  if (window.isMinimized()) {
+    window.restore()
+  }
+  if (!window.isVisible()) {
+    window.show()
+  }
+  window.focus()
+}
+
+function hideMainWindow(): void {
+  const window = getMainWindow()
+  if (!window || !window.isVisible()) return
+  window.hide()
+  log.info('Main window hidden; app remains active in the tray/background')
+}
+
+function syncLoginItemSettings(): void {
+  const settings = getSettings()
+  app.setLoginItemSettings({ openAtLogin: settings.openAtLogin, openAsHidden: true })
+}
+
+function sendToRenderer(channel: 'schedule:executed' | 'reminder:triggered', payload: RunLog | Reminder): void {
+  const window = getMainWindow()
+  if (!window) return
+
+  if (channel === 'schedule:executed') {
+    window.webContents.send('schedule:executed', payload)
+    return
+  }
+
+  window.webContents.send('reminder:triggered', payload)
+}
+
+function getExecutionContactLabel(execLog: RunLog): string {
+  const schedule = getScheduleById(execLog.scheduleId)
+  const contact = schedule ? getContactById(schedule.contactId) : null
+
+  return firstNonEmpty(
+    contact?.name,
+    schedule?.contactName,
+    execLog.contactName,
+    contact?.linkedinSlug,
+    execLog.linkedinSlug
+  ) ?? DEFAULT_CONTACT_LABEL
+}
+
+function getExecutionMessagePreview(execLog: RunLog): string | null {
+  const schedule = getScheduleById(execLog.scheduleId)
+  return truncateForNotification(schedule?.message ?? execLog.messagePreview, 90)
+}
+
+function buildExecutionNotification(execLog: RunLog): { title: string; body: string } {
+  const label = getExecutionContactLabel(execLog)
+  const messagePreview = getExecutionMessagePreview(execLog)
+  const title = execLog.status === 'success' ? 'Message Sent'
+    : execLog.status === 'dry_run' ? 'Dry Run Complete'
+    : execLog.status === 'failed' ? 'Send Failed'
+    : 'Schedule Skipped'
+
+  if (execLog.status === 'failed') {
+    const failureReason = truncateForNotification(execLog.errorMessage, 180) ?? 'Unknown error'
+    return {
+      title,
+      body: label === DEFAULT_CONTACT_LABEL ? failureReason : `${label}: ${failureReason}`
+    }
+  }
+
+  if (execLog.status === 'skipped') {
+    const skipReason = truncateForNotification(execLog.errorMessage, 180)
+    return {
+      title,
+      body: skipReason ? `${label}: ${skipReason}` : `Skipped for ${label}`
+    }
+  }
+
+  if (messagePreview) {
+    return { title, body: `${label}: ${messagePreview}` }
+  }
+
+  return {
+    title,
+    body: execLog.status === 'dry_run'
+      ? `Dry run completed for ${label}`
+      : `Message sent to ${label}`
+  }
+}
+
+function buildReminderNotification(reminder: Reminder): { title: string; body: string } {
+  const contact = getContactById(reminder.contactId)
+  const label = firstNonEmpty(contact?.name, reminder.contactName, contact?.linkedinSlug) ?? DEFAULT_REMINDER_LABEL
+  const message = truncateForNotification(reminder.message, 180)
+
+  return {
+    title: label === DEFAULT_REMINDER_LABEL ? 'LinkedIn Reminder' : `Reach out to ${label}`,
+    body: message ?? (
+      label === DEFAULT_REMINDER_LABEL
+        ? 'Time to review your LinkedIn reminders.'
+        : `Time to connect with ${label} on LinkedIn.`
+    )
   }
 }
 
@@ -87,12 +235,7 @@ function createTray(): void {
     {
       label: 'Show Window',
       click: () => {
-        if (mainWindow) {
-          mainWindow.show()
-          mainWindow.focus()
-        } else {
-          createWindow()
-        }
+        showMainWindow()
       }
     },
     { type: 'separator' },
@@ -107,26 +250,15 @@ function createTray(): void {
   tray.setContextMenu(contextMenu)
 
   tray.on('click', () => {
-    if (mainWindow) {
-      if (mainWindow.isVisible()) {
-        mainWindow.focus()
-      } else {
-        mainWindow.show()
-        mainWindow.focus()
-      }
-    } else {
-      createWindow()
-    }
+    showMainWindow()
   })
 }
 
 // --- Second instance handler: focus existing window ---
 app.on('second-instance', () => {
-  if (mainWindow) {
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.show()
-    mainWindow.focus()
-  }
+  app.whenReady().then(() => {
+    showMainWindow()
+  })
 })
 
 app.whenReady().then(() => {
@@ -149,38 +281,23 @@ app.whenReady().then(() => {
   log.info('System tray created')
 
   // Sync login item setting from DB
-  const settings = getSettings()
-  app.setLoginItemSettings({ openAtLogin: settings.openAtLogin, openAsHidden: true })
+  syncLoginItemSettings()
 
   // Push execution events to renderer + show native notification
   setOnExecutedCallback((execLog: RunLog) => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('schedule:executed', execLog)
-    }
+    sendToRenderer('schedule:executed', execLog)
 
     if (Notification.isSupported()) {
-      const title = execLog.status === 'success' ? 'Message Sent'
-        : execLog.status === 'dry_run' ? 'Dry Run Complete'
-        : execLog.status === 'failed' ? 'Send Failed'
-        : 'Schedule Skipped'
-      const body = execLog.status === 'failed'
-        ? (execLog.errorMessage || 'Unknown error')
-        : (execLog.contactName || execLog.scheduleId)
-      new Notification({ title, body }).show()
+      new Notification(buildExecutionNotification(execLog)).show()
     }
   })
 
   // Push reminder events to renderer + show native notification
   setOnReminderCallback((reminder: Reminder) => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('reminder:triggered', reminder)
-    }
+    sendToRenderer('reminder:triggered', reminder)
 
     if (Notification.isSupported()) {
-      new Notification({
-        title: `Reach out to ${reminder.contactName}`,
-        body: reminder.message || `Time to connect with ${reminder.contactName} on LinkedIn`
-      }).show()
+      new Notification(buildReminderNotification(reminder)).show()
     }
   })
 
@@ -191,15 +308,14 @@ app.whenReady().then(() => {
     resyncReminders()
   })
 
-  createWindow()
+  if (wasOpenedHiddenAtLogin()) {
+    log.info('App launched hidden at login; waiting for explicit show action')
+  } else {
+    showMainWindow()
+  }
 
   app.on('activate', () => {
-    if (mainWindow) {
-      mainWindow.show()
-      mainWindow.focus()
-    } else {
-      createWindow()
-    }
+    showMainWindow()
   })
 })
 

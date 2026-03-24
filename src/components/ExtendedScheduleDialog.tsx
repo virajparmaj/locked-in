@@ -5,6 +5,8 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
 import { CalendarDays } from 'lucide-react'
+import { TimeRulerPicker } from '@/components/TimeRulerPicker'
+import { formatTimeLabel } from '@/lib/schedule-picker'
 
 const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -53,7 +55,7 @@ export function ExtendedScheduleDialog({
 
   function buildPreview(): string {
     const day = dayOfMonth
-    const time = timeOfDay || '09:00'
+    const time = formatTimeLabel(timeOfDay || '09:00')
     if (scheduleType === 'quarterly') {
       const months = [0, 1, 2, 3].map(i => MONTHS[(monthOfYear + i * 3) % 12])
       return `Fires on the ${day}th of ${months.join(', ')} at ${time}`
@@ -125,7 +127,7 @@ export function ExtendedScheduleDialog({
 
         <div className="space-y-2">
           <Label htmlFor="ext-time">Time</Label>
-          <Input id="ext-time" type="time" value={timeOfDay} onChange={(e) => setTimeOfDay(e.target.value)} />
+          <TimeRulerPicker id="ext-time" value={timeOfDay} onChange={setTimeOfDay} />
         </div>
 
         <div className="rounded-md bg-muted/50 px-3 py-2 border">

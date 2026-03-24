@@ -4,6 +4,7 @@ import { join } from 'path'
 import { chmodSync } from 'fs'
 import { nanoid } from 'nanoid'
 import { createLogger } from '../utils/logger'
+import { extractLinkedInSlug, normalizeLinkedInProfileUrl } from '@shared/linkedin'
 import type {
   Contact,
   CreateContactInput,
@@ -112,6 +113,103 @@ const VALID_SETTINGS_KEYS = new Set([
   'default_message_template',
   'min_interval_between_sends'
 ])
+
+const SETTINGS_DEFAULTS = {
+  global_dry_run: '0',
+  send_delay_ms: '5000',
+  page_load_delay_ms: '4000',
+  browser_app: 'Google Chrome',
+  open_at_login: '0',
+  max_retries: '2',
+  theme: 'system',
+  default_message_template: '',
+  min_interval_between_sends: '60000'
+} as const
+
+const BOOLEAN_SETTINGS = new Set(['global_dry_run', 'open_at_login'])
+const VALID_THEMES = new Set<AppSettings['theme']>(['system', 'light', 'dark'])
+const NUMERIC_SETTING_RULES = {
+  send_delay_ms: { min: 1000, max: 15000, label: 'Send delay' },
+  page_load_delay_ms: { min: 1000, max: 15000, label: 'Page load delay' },
+  max_retries: { min: 0, max: 5, label: 'Max retries' },
+  min_interval_between_sends: { min: 10000, max: 300000, label: 'Minimum interval between sends' }
+} as const
+
+type SettingKey = keyof typeof SETTINGS_DEFAULTS
+
+function parseIntegerSetting(key: keyof typeof NUMERIC_SETTING_RULES, value: unknown): string {
+  const { min, max, label } = NUMERIC_SETTING_RULES[key]
+  if (typeof value !== 'string') {
+    throw new Error(`${label} must be a whole number between ${min} and ${max}`)
+  }
+
+  const trimmed = value.trim()
+  if (!/^-?\d+$/.test(trimmed)) {
+    throw new Error(`${label} must be a whole number between ${min} and ${max}`)
+  }
+
+  const parsed = Number(trimmed)
+  if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) {
+    throw new Error(`${label} must be between ${min} and ${max}`)
+  }
+
+  return String(parsed)
+}
+
+export function validateAndNormalizeSetting(key: string, value: unknown): string {
+  if (!VALID_SETTINGS_KEYS.has(key)) {
+    throw new Error(`Invalid settings key: ${key}`)
+  }
+
+  if (BOOLEAN_SETTINGS.has(key)) {
+    if (value !== '0' && value !== '1') {
+      throw new Error(`${key} must be "0" or "1"`)
+    }
+    return value
+  }
+
+  if (key in NUMERIC_SETTING_RULES) {
+    return parseIntegerSetting(key as keyof typeof NUMERIC_SETTING_RULES, value)
+  }
+
+  if (key === 'theme') {
+    if (typeof value !== 'string' || !VALID_THEMES.has(value as AppSettings['theme'])) {
+      throw new Error('Theme must be one of: system, light, dark')
+    }
+    return value
+  }
+
+  if (key === 'browser_app') {
+    if (typeof value !== 'string' || value.trim().length === 0) {
+      throw new Error('Browser app name is required')
+    }
+    return value.trim()
+  }
+
+  if (key === 'default_message_template') {
+    if (typeof value !== 'string') {
+      throw new Error('Default message template must be a string')
+    }
+    return value
+  }
+
+  throw new Error(`Unhandled settings key: ${key}`)
+}
+
+function getStoredSetting(map: Partial<Record<SettingKey, string>>, key: SettingKey): string {
+  const fallback = SETTINGS_DEFAULTS[key]
+  const storedValue = map[key]
+  const candidate = storedValue ?? fallback
+
+  try {
+    return validateAndNormalizeSetting(key, candidate)
+  } catch (err) {
+    if (storedValue !== undefined) {
+      log.warn(`Invalid stored setting "${key}", using default`, err)
+    }
+    return fallback
+  }
+}
 
 // --- Row Mappers ---
 
@@ -229,14 +327,18 @@ export function getContactById(id: string): Contact | null {
 export function createContact(input: CreateContactInput): Contact {
   const id = nanoid()
   const now = new Date().toISOString()
-  const slug = extractLinkedInSlug(input.linkedinUrl)
+  const normalizedUrl = normalizeLinkedInProfileUrl(input.linkedinUrl)
+  if (!normalizedUrl) {
+    throw new Error('Invalid LinkedIn profile URL')
+  }
+  const slug = extractLinkedInSlug(normalizedUrl)
   db.prepare(`
     INSERT INTO contacts (id, name, linkedin_url, linkedin_slug, company, notes, tags, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     input.name,
-    input.linkedinUrl,
+    normalizedUrl,
     slug,
     input.company || '',
     input.notes || '',
@@ -252,8 +354,13 @@ export function updateContact(id: string, input: UpdateContactInput): Contact {
   if (!existing) throw new Error(`Contact ${id} not found`)
 
   const now = new Date().toISOString()
-  const url = input.linkedinUrl ?? existing.linkedinUrl
-  const slug = input.linkedinUrl ? extractLinkedInSlug(input.linkedinUrl) : existing.linkedinSlug
+  const url = input.linkedinUrl !== undefined
+    ? normalizeLinkedInProfileUrl(input.linkedinUrl)
+    : existing.linkedinUrl
+  if (!url) {
+    throw new Error('Invalid LinkedIn profile URL')
+  }
+  const slug = extractLinkedInSlug(url)
 
   db.prepare(`
     UPDATE contacts SET
@@ -284,12 +391,6 @@ export function searchContacts(query: string): Contact[] {
     ORDER BY name ASC
   `).all(q, q, q, q, q)
   return (rows as Record<string, unknown>[]).map(rowToContact)
-}
-
-/** Extract the LinkedIn slug from a profile URL (e.g. "john-doe" from "linkedin.com/in/john-doe/") */
-export function extractLinkedInSlug(url: string): string {
-  const match = url.match(/linkedin\.com\/in\/([^\/?#]+)/)
-  return match ? match[1] : ''
 }
 
 // --- Schedules ---
@@ -591,27 +692,39 @@ export function getSettings(): AppSettings {
     key: string
     value: string
   }[]
-  const map: Record<string, string> = {}
-  for (const row of rows) map[row.key] = row.value
+  const map: Partial<Record<SettingKey, string>> = {}
+  for (const row of rows) {
+    if (row.key in SETTINGS_DEFAULTS) {
+      map[row.key as SettingKey] = row.value
+    }
+  }
+
+  const globalDryRun = getStoredSetting(map, 'global_dry_run')
+  const sendDelayMs = getStoredSetting(map, 'send_delay_ms')
+  const pageLoadDelayMs = getStoredSetting(map, 'page_load_delay_ms')
+  const browserApp = getStoredSetting(map, 'browser_app')
+  const openAtLogin = getStoredSetting(map, 'open_at_login')
+  const maxRetries = getStoredSetting(map, 'max_retries')
+  const theme = getStoredSetting(map, 'theme')
+  const defaultMessageTemplate = getStoredSetting(map, 'default_message_template')
+  const minIntervalBetweenSends = getStoredSetting(map, 'min_interval_between_sends')
 
   return {
-    globalDryRun: map.global_dry_run === '1',
-    sendDelayMs: parseInt(map.send_delay_ms || '5000', 10),
-    pageLoadDelayMs: parseInt(map.page_load_delay_ms || '4000', 10),
-    browserApp: map.browser_app || 'Google Chrome',
-    openAtLogin: map.open_at_login === '1',
-    maxRetries: parseInt(map.max_retries || '2', 10),
-    theme: (map.theme as 'system' | 'light' | 'dark') || 'system',
-    defaultMessageTemplate: map.default_message_template || '',
-    minIntervalBetweenSends: parseInt(map.min_interval_between_sends || '60000', 10)
+    globalDryRun: globalDryRun === '1',
+    sendDelayMs: Number(sendDelayMs),
+    pageLoadDelayMs: Number(pageLoadDelayMs),
+    browserApp,
+    openAtLogin: openAtLogin === '1',
+    maxRetries: Number(maxRetries),
+    theme: theme as AppSettings['theme'],
+    defaultMessageTemplate,
+    minIntervalBetweenSends: Number(minIntervalBetweenSends)
   }
 }
 
 export function updateSetting(key: string, value: string): void {
-  if (!VALID_SETTINGS_KEYS.has(key)) {
-    throw new Error(`Invalid settings key: ${key}`)
-  }
-  db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, value)
+  const normalizedValue = validateAndNormalizeSetting(key, value)
+  db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, normalizedValue)
 }
 
 export function closeDb(): void {

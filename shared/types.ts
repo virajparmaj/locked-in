@@ -93,7 +93,7 @@ export interface RunLog {
   completedAt: string | null
   executionDuration?: number      // milliseconds
   scheduledTime?: string          // ISO 8601 intended fire time
-  retryAttempt?: number           // 0 = first try, 1+ = retries
+  retryAttempt?: number           // 0 = initial attempt for a scheduled slot, 1+ = retries for that same slot
   retryOf?: string                // original run_log.id if this is a retry
   // joined from schedule + contact for display
   contactName?: string
@@ -109,7 +109,7 @@ export interface AppSettings {
   pageLoadDelayMs: number
   browserApp: string
   openAtLogin: boolean
-  maxRetries: number
+  maxRetries: number              // retry attempts allowed after the initial attempt
   theme: ThemePreference
   defaultMessageTemplate: string
   minIntervalBetweenSends: number

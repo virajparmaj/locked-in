@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
@@ -12,12 +12,33 @@ interface ReminderFormProps {
   onCancel: () => void
 }
 
+function getReminderFormState(initial?: Reminder | null) {
+  return {
+    contactId: initial?.contactId ?? '',
+    frequency: initial?.frequency ?? 'quarterly',
+    message: initial?.message ?? ''
+  } satisfies {
+    contactId: string
+    frequency: ReminderFrequency
+    message: string
+  }
+}
+
 export function ReminderForm({ initial, contacts, onSubmit, onCancel }: ReminderFormProps) {
-  const [contactId, setContactId] = useState(initial?.contactId || '')
-  const [frequency, setFrequency] = useState<ReminderFrequency>(initial?.frequency || 'quarterly')
-  const [message, setMessage] = useState(initial?.message || '')
+  const [contactId, setContactId] = useState(() => getReminderFormState(initial).contactId)
+  const [frequency, setFrequency] = useState<ReminderFrequency>(() => getReminderFormState(initial).frequency)
+  const [message, setMessage] = useState(() => getReminderFormState(initial).message)
   const [submitting, setSubmitting] = useState(false)
   const [errors, setErrors] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    const next = getReminderFormState(initial)
+    setContactId(next.contactId)
+    setFrequency(next.frequency)
+    setMessage(next.message)
+    setSubmitting(false)
+    setErrors({})
+  }, [initial?.id])
 
   function validate(): boolean {
     const errs: Record<string, string> = {}

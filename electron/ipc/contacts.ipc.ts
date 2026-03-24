@@ -1,11 +1,10 @@
 import { ipcMain } from 'electron'
 import * as db from '../services/db.service'
 import { createLogger } from '../utils/logger'
+import { isLinkedInProfileUrl } from '@shared/linkedin'
 import type { CreateContactInput, UpdateContactInput } from '../../shared/types'
 
 const log = createLogger('ipc:contacts')
-
-const LINKEDIN_URL_RE = /linkedin\.com\/in\/[^\/?#]+/
 
 function validateCreateInput(data: CreateContactInput): string | null {
   if (!data.name || typeof data.name !== 'string' || data.name.trim().length === 0) {
@@ -14,7 +13,17 @@ function validateCreateInput(data: CreateContactInput): string | null {
   if (!data.linkedinUrl || typeof data.linkedinUrl !== 'string') {
     return 'LinkedIn URL is required'
   }
-  if (!LINKEDIN_URL_RE.test(data.linkedinUrl)) {
+  if (!isLinkedInProfileUrl(data.linkedinUrl)) {
+    return 'Invalid LinkedIn profile URL (expected format: linkedin.com/in/username)'
+  }
+  return null
+}
+
+function validateUpdateInput(data: UpdateContactInput): string | null {
+  if (data.name !== undefined && (!data.name || data.name.trim().length === 0)) {
+    return 'Name is required'
+  }
+  if (data.linkedinUrl !== undefined && !isLinkedInProfileUrl(data.linkedinUrl)) {
     return 'Invalid LinkedIn profile URL (expected format: linkedin.com/in/username)'
   }
   return null
@@ -55,6 +64,10 @@ export function registerContactsHandlers(): void {
   })
 
   ipcMain.handle('contacts:update', (_, id: string, data: UpdateContactInput) => {
+    const validationError = validateUpdateInput(data)
+    if (validationError) {
+      throw new Error(validationError)
+    }
     try {
       const contact = db.updateContact(id, data)
       return contact

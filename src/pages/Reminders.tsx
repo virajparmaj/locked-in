@@ -54,7 +54,7 @@ export function Reminders() {
   async function handleMessageNow(contactId: string) {
     try {
       await openCompose(contactId)
-      toast({ title: 'Opening LinkedIn...' })
+      toast({ title: 'LinkedIn compose opened' })
     } catch (err) {
       toast({ title: 'Failed to open', description: err instanceof Error ? err.message : 'Unknown error', variant: 'destructive' })
     }

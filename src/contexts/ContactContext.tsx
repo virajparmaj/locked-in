@@ -2,6 +2,8 @@ import { createContext, useContext, useState, useEffect, useCallback, type React
 import { api } from '@/lib/ipc'
 import type { Contact, CreateContactInput, UpdateContactInput } from '../../shared/types'
 
+const CONTACTS_CHANGED_EVENT = 'lockedin:contacts-changed'
+
 interface ContactContextValue {
   contacts: Contact[]
   loading: boolean
@@ -19,6 +21,12 @@ export function ContactProvider({ children }: { children: ReactNode }) {
   const [contacts, setContacts] = useState<Contact[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+
+  const notifyContactsChanged = useCallback((type: 'created' | 'updated' | 'deleted', id: string) => {
+    window.dispatchEvent(new CustomEvent(CONTACTS_CHANGED_EVENT, {
+      detail: { type, id }
+    }))
+  }, [])
 
   const refresh = useCallback(async () => {
     setError(null)
@@ -38,20 +46,23 @@ export function ContactProvider({ children }: { children: ReactNode }) {
 
   const create = useCallback(async (data: CreateContactInput): Promise<Contact> => {
     const contact = await api.createContact(data)
+    notifyContactsChanged('created', contact.id)
     await refresh()
     return contact
-  }, [refresh])
+  }, [notifyContactsChanged, refresh])
 
   const update = useCallback(async (id: string, data: UpdateContactInput): Promise<Contact> => {
     const contact = await api.updateContact(id, data)
+    notifyContactsChanged('updated', id)
     await refresh()
     return contact
-  }, [refresh])
+  }, [notifyContactsChanged, refresh])
 
   const remove = useCallback(async (id: string): Promise<void> => {
     await api.deleteContact(id)
+    notifyContactsChanged('deleted', id)
     await refresh()
-  }, [refresh])
+  }, [notifyContactsChanged, refresh])
 
   const search = useCallback(async (query: string): Promise<Contact[]> => {
     return api.searchContacts(query)

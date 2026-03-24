@@ -16,6 +16,7 @@ export function ContactModal({ open, onOpenChange, contact, onSubmit }: ContactM
         <DialogTitle>{contact ? 'Edit Contact' : 'Add Contact'}</DialogTitle>
       </DialogHeader>
       <ContactForm
+        key={contact?.id ?? 'new'}
         initial={contact}
         onSubmit={async (data) => {
           await onSubmit(data)

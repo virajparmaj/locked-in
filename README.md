@@ -3,7 +3,7 @@
 
   # LockedIn
 
-  **Locally run LinkedIn message scheduler for macOS**
+  **Local LinkedIn browser automation scheduler for macOS**
 </div>
 
 ---
@@ -46,4 +46,6 @@ npm test         # run tests
 
 ## About
 
-LockedIn runs entirely on your machine — no cloud, no accounts, no data leaving your device. It schedules LinkedIn messages using your local browser session via Puppeteer, triggered by a native macOS menu bar app.
+LockedIn runs entirely on your machine — no cloud, no accounts, and no LinkedIn API integration. It automates your logged-in LinkedIn browser session with AppleScript and in-page JavaScript from a native macOS menu bar app: open the saved profile URL, click **Message**, type into the compose box, then click **Send**.
+
+Browser support is based on Chrome/Chromium-style AppleScript control on macOS. Google Chrome is the default and tested browser, and other browsers are only expected to work if they expose the same AppleScript window/tab model.

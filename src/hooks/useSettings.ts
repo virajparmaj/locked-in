@@ -18,9 +18,14 @@ export function useSettings() {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [saveError, setSaveError] = useState<string | null>(null)
 
-  const refresh = useCallback(async () => {
-    setLoading(true)
+  const clearSaveError = useCallback(() => {
+    setSaveError(null)
+  }, [])
+
+  const refresh = useCallback(async (showLoading = true) => {
+    if (showLoading) setLoading(true)
     setError(null)
     try {
       const data = await api.getSettings()
@@ -36,10 +41,19 @@ export function useSettings() {
 
   useEffect(() => { refresh() }, [refresh])
 
-  const updateSetting = async (key: string, value: string): Promise<void> => {
-    await api.updateSetting(key, value)
-    await refresh()
-  }
+  const updateSetting = useCallback(async (key: string, value: string): Promise<boolean> => {
+    setSaveError(null)
+    try {
+      await api.updateSetting(key, value)
+      await refresh(false)
+      return true
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error('Failed to update setting:', msg)
+      setSaveError(msg)
+      return false
+    }
+  }, [refresh])
 
-  return { settings, loading, error, refresh, updateSetting }
+  return { settings, loading, error, saveError, refresh, updateSetting, clearSaveError }
 }

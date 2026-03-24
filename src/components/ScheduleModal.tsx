@@ -12,12 +12,15 @@ interface ScheduleModalProps {
 }
 
 export function ScheduleModal({ open, onOpenChange, schedule, contacts, onSubmit, defaultDate }: ScheduleModalProps) {
+  const formKey = schedule?.id ?? defaultDate?.toISOString() ?? 'new'
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={onOpenChange} contentClassName="max-w-lg">
       <DialogHeader>
         <DialogTitle>{schedule ? 'Edit Schedule' : 'New Schedule'}</DialogTitle>
       </DialogHeader>
       <ScheduleForm
+        key={formKey}
         initial={schedule}
         defaultDate={defaultDate}
         contacts={contacts}

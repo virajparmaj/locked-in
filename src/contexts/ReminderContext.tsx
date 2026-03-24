@@ -2,6 +2,8 @@ import { createContext, useContext, useState, useEffect, useCallback, type React
 import { api } from '@/lib/ipc'
 import type { Reminder, CreateReminderInput, UpdateReminderInput } from '../../shared/types'
 
+const CONTACTS_CHANGED_EVENT = 'lockedin:contacts-changed'
+
 interface ReminderContextValue {
   reminders: Reminder[]
   loading: boolean
@@ -41,6 +43,12 @@ export function ReminderProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const unsub = api.onReminderTriggered(() => { refresh() })
     return unsub
+  }, [refresh])
+
+  useEffect(() => {
+    const handleContactsChanged = () => { refresh() }
+    window.addEventListener(CONTACTS_CHANGED_EVENT, handleContactsChanged)
+    return () => window.removeEventListener(CONTACTS_CHANGED_EVENT, handleContactsChanged)
   }, [refresh])
 
   const create = useCallback(async (data: CreateReminderInput): Promise<Reminder> => {

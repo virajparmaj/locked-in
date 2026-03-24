@@ -41,14 +41,22 @@ function DebouncedInput({
 }
 
 export function Settings() {
-  const { settings, loading, error, refresh, updateSetting } = useSettings()
+  const { settings, loading, error, saveError, refresh, updateSetting, clearSaveError } = useSettings()
   const [chromeAccess, setChromeAccess] = useState<AccessibilityStatus | null>(null)
   const [checkingChrome, setCheckingChrome] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
 
   useEffect(() => { checkChrome() }, [])
 
+  const handleSettingUpdate = useCallback((key: string, value: string) => {
+    setActionError(null)
+    clearSaveError()
+    void updateSetting(key, value)
+  }, [clearSaveError, updateSetting])
+
   async function checkChrome() {
     setCheckingChrome(true)
+    setActionError(null)
     try {
       const status = await api.checkChromeAccess()
       setChromeAccess(status)
@@ -60,10 +68,12 @@ export function Settings() {
   }
 
   async function openLinkedIn() {
+    setActionError(null)
     try {
       await api.openLinkedInInChrome()
     } catch (err) {
-      console.error('Failed to open LinkedIn:', err)
+      const msg = err instanceof Error ? err.message : String(err)
+      setActionError(msg)
     }
   }
 
@@ -83,12 +93,19 @@ export function Settings() {
     <div className="p-6 space-y-8 max-w-2xl">
       <div>
         <h2 className="text-xl font-semibold">Settings</h2>
-        <p className="text-sm text-muted-foreground">Configure LockedIn behavior</p>
+        <p className="text-sm text-muted-foreground">Configure LockedIn&apos;s local browser automation for LinkedIn</p>
       </div>
 
-      {/* Chrome Access */}
+      {(saveError || actionError) && (
+        <div className="rounded-lg border border-destructive/50 bg-destructive/5 p-4 space-y-1">
+          <p className="text-sm font-medium text-destructive">Settings action failed</p>
+          <p className="text-xs text-muted-foreground font-mono break-all">{saveError || actionError}</p>
+        </div>
+      )}
+
+      {/* Browser Automation Access */}
       <section className="space-y-3">
-        <h3 className="text-sm font-medium">Chrome Access</h3>
+        <h3 className="text-sm font-medium">Browser Automation</h3>
         <div className="rounded-lg border p-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
             {chromeAccess?.granted ? (
@@ -98,12 +115,12 @@ export function Settings() {
             )}
             <div>
               <p className="text-sm font-medium">
-                {chromeAccess?.granted ? 'Chrome accessible' : 'Chrome not accessible'}
+                {chromeAccess?.granted ? 'Browser automation ready' : 'Browser automation needs attention'}
               </p>
               <p className="text-xs text-muted-foreground">
                 {chromeAccess?.granted
-                  ? 'LockedIn can control Chrome via AppleScript'
-                  : chromeAccess?.error || 'Check Chrome is running and AppleScript permissions are granted'}
+                  ? 'LockedIn can control your configured Chromium-compatible browser via AppleScript.'
+                  : chromeAccess?.error || 'Make sure your configured Chromium-compatible browser is installed, running, and allowed for AppleScript automation.'}
               </p>
             </div>
           </div>
@@ -116,12 +133,15 @@ export function Settings() {
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={openLinkedIn}>
             <Globe className="h-3.5 w-3.5 mr-1.5" />
-            Open LinkedIn in Chrome
+            Open LinkedIn in Browser
           </Button>
           <p className="text-xs text-muted-foreground self-center">
-            Verify you're logged in
+            Verify you&apos;re logged in within the configured browser
           </p>
         </div>
+        <p className="text-[11px] text-muted-foreground">
+          LockedIn is browser automation, not a native LinkedIn integration. Google Chrome is the default/tested browser, and only Chromium-style AppleScript control is expected to work reliably.
+        </p>
       </section>
 
       {/* Global Dry Run */}
@@ -134,7 +154,7 @@ export function Settings() {
           </div>
           <Switch
             checked={settings.globalDryRun}
-            onCheckedChange={(checked) => updateSetting('global_dry_run', checked ? '1' : '0')}
+            onCheckedChange={(checked) => handleSettingUpdate('global_dry_run', checked ? '1' : '0')}
           />
         </div>
       </section>
@@ -148,7 +168,7 @@ export function Settings() {
             <DebouncedInput
               type="number"
               value={String(settings.pageLoadDelayMs)}
-              onSave={(v) => updateSetting('page_load_delay_ms', v)}
+              onSave={(v) => handleSettingUpdate('page_load_delay_ms', v)}
               min="1000"
               max="15000"
             />
@@ -159,7 +179,7 @@ export function Settings() {
             <DebouncedInput
               type="number"
               value={String(settings.sendDelayMs)}
-              onSave={(v) => updateSetting('send_delay_ms', v)}
+              onSave={(v) => handleSettingUpdate('send_delay_ms', v)}
               min="1000"
               max="15000"
             />
@@ -171,7 +191,7 @@ export function Settings() {
           <DebouncedInput
             type="number"
             value={String(settings.minIntervalBetweenSends)}
-            onSave={(v) => updateSetting('min_interval_between_sends', v)}
+            onSave={(v) => handleSettingUpdate('min_interval_between_sends', v)}
             min="10000"
             max="300000"
           />
@@ -187,7 +207,7 @@ export function Settings() {
           <DebouncedInput
             type="number"
             value={String(settings.maxRetries)}
-            onSave={(v) => updateSetting('max_retries', v)}
+            onSave={(v) => handleSettingUpdate('max_retries', v)}
             min="0"
             max="5"
           />
@@ -198,12 +218,15 @@ export function Settings() {
       <section className="space-y-3">
         <h3 className="text-sm font-medium">Browser</h3>
         <div className="space-y-2">
-          <Label>Browser App Name</Label>
+          <Label>Chromium-Compatible Browser App Name</Label>
           <DebouncedInput
             value={settings.browserApp}
-            onSave={(v) => updateSetting('browser_app', v)}
+            onSave={(v) => handleSettingUpdate('browser_app', v)}
             placeholder="Google Chrome"
           />
+          <p className="text-[11px] text-muted-foreground">
+            Enter the macOS app name used for browser automation. Google Chrome is the default/tested option, and only browsers with Chrome-style AppleScript tab control are expected to work reliably.
+          </p>
         </div>
       </section>
 
@@ -216,7 +239,7 @@ export function Settings() {
             placeholder="Hi {name}, ..."
             rows={3}
             value={settings.defaultMessageTemplate}
-            onChange={(e) => updateSetting('default_message_template', e.target.value)}
+            onChange={(e) => handleSettingUpdate('default_message_template', e.target.value)}
           />
           <p className="text-[11px] text-muted-foreground">Pre-fill new schedule messages with this template</p>
         </div>
@@ -232,7 +255,7 @@ export function Settings() {
           </div>
           <Switch
             checked={settings.openAtLogin}
-            onCheckedChange={(checked) => updateSetting('open_at_login', checked ? '1' : '0')}
+            onCheckedChange={(checked) => handleSettingUpdate('open_at_login', checked ? '1' : '0')}
           />
         </div>
       </section>
@@ -250,7 +273,7 @@ export function Settings() {
               key={value}
               variant={settings.theme === value ? 'default' : 'outline'}
               size="sm"
-              onClick={() => updateSetting('theme', value)}
+              onClick={() => handleSettingUpdate('theme', value)}
             >
               <Icon className="h-3.5 w-3.5 mr-1.5" />
               {label}

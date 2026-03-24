@@ -1,9 +1,8 @@
 import { ipcMain } from 'electron'
 import * as db from '../services/db.service'
 import { snoozeReminderService } from '../services/reminder.service'
-import { openLinkedInInChrome } from '../services/linkedin.service'
-import { LINKEDIN_SELECTORS } from '../services/linkedin.service'
-import { runAppleScript } from '../utils/applescript'
+import { openLinkedInCompose } from '../services/linkedin.service'
+import { normalizeLinkedInProfileUrl } from '@shared/linkedin'
 import { createLogger } from '../utils/logger'
 import type { CreateReminderInput, UpdateReminderInput, ReminderFrequency } from '../../shared/types'
 
@@ -84,20 +83,10 @@ export function registerRemindersHandlers(): void {
     try {
       const contact = db.getContactById(contactId)
       if (!contact) throw new Error('Contact not found')
-      if (!contact.linkedinSlug) throw new Error('Contact has no LinkedIn slug')
+      const profileUrl = normalizeLinkedInProfileUrl(contact.linkedinUrl)
+      if (!profileUrl) throw new Error('Contact has no valid LinkedIn profile URL')
 
-      const settings = db.getSettings()
-      const browserApp = settings.browserApp.replace(/['"\\;\n\r]/g, '')
-      const profileUrl = `${LINKEDIN_SELECTORS.PROFILE_URL_PREFIX}${encodeURIComponent(contact.linkedinSlug)}/`
-
-      const script = `
-        tell application "${browserApp}"
-          activate
-          if (count of windows) = 0 then make new window
-          set URL of active tab of first window to "${profileUrl}"
-        end tell
-      `
-      await runAppleScript(script)
+      await openLinkedInCompose(profileUrl)
     } catch (err) {
       log.error('openCompose failed', err)
       throw err
