@@ -5,11 +5,11 @@
     "moduleResolution": "bundler",
     "allowSyntheticDefaultImports": true,
     "jsx": "react-jsx",
-    "outDir": "./out",
+    "outDir": "out",
     "target": "ESNext",
     "strict": true,
     "skipLibCheck": true,
-    "baseUrl": ".",
+    "baseUrl": "",
     "paths": {
       "@/*": ["src/*"],
       "@shared/*": ["shared/*"]

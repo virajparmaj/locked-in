@@ -1,4 +1,4 @@
-import { runAppleScript, runCommand, toAppleScriptString } from '../utils/applescript'
+import { runAppleScript, runCommand, toAppleScriptString, toAppleScriptNumber } from '../utils/applescript'
 import { getSettings } from './db.service'
 import { createLogger } from '../utils/logger'
 import {
@@ -249,16 +249,18 @@ async function ensureBrowserRunning(browserApp: string): Promise<void> {
 async function hasUsableAutomationContext(context: AutomationBrowserContext): Promise<boolean> {
   const script = `
     tell application ${toAppleScriptString(context.browserApp)}
-      if (count of (every window whose id is ${toAppleScriptString(context.windowId)})) = 0 then
+      if (count of (every window whose id is ${toAppleScriptNumber(context.windowId)})) = 0 then
         return "missing_window"
       end if
 
-      set targetWindow to first window whose id is ${toAppleScriptString(context.windowId)}
-      if (count of (every tab of targetWindow whose id is ${toAppleScriptString(context.tabId)})) = 0 then
-        return "missing_tab"
-      end if
-
-      return "ok"
+      set targetWindow to first window whose id is ${toAppleScriptNumber(context.windowId)}
+      set tabList to every tab of targetWindow
+      repeat with i from 1 to (count of tabList)
+        if id of (item i of tabList) is ${toAppleScriptNumber(context.tabId)} then
+          return "ok"
+        end if
+      end repeat
+      return "missing_tab"
     end tell
   `
 
@@ -305,17 +307,31 @@ async function focusAutomationContext(context: AutomationBrowserContext): Promis
   const script = `
     tell application ${toAppleScriptString(context.browserApp)}
       activate
-      set targetWindow to first window whose id is ${toAppleScriptString(context.windowId)}
-      set targetTab to first tab of targetWindow whose id is ${toAppleScriptString(context.tabId)}
-      set active tab index of targetWindow to (index of targetTab)
-      set index of targetWindow to 1
-      return "ok"
+      set targetWindow to first window whose id is ${toAppleScriptNumber(context.windowId)}
+      set tabList to every tab of targetWindow
+      repeat with i from 1 to (count of tabList)
+        if id of (item i of tabList) is ${toAppleScriptNumber(context.tabId)} then
+          set active tab index of targetWindow to i
+          set index of targetWindow to 1
+          return "ok"
+        end if
+      end repeat
+      return "tab_not_found"
     end tell
   `
 
   try {
-    await runAppleScript(script, 5000)
+    const result = await runAppleScript(script, 5000)
+    if (result.trim() === 'tab_not_found') {
+      automationContext = null
+      throw makeError(
+        'stale_selectors',
+        'LinkedIn automation tab was closed or not found in the browser window.',
+        getContextLogFields(context)
+      )
+    }
   } catch (error) {
+    if (isLinkedInAutomationError(error)) throw error
     automationContext = null
     throw classifyLinkedInError(error)
   }
@@ -329,10 +345,9 @@ async function navigateAutomationContextToUrl(
 
   const script = `
     tell application ${toAppleScriptString(context.browserApp)}
-      set targetWindow to first window whose id is ${toAppleScriptString(context.windowId)}
-      set targetTab to first tab of targetWindow whose id is ${toAppleScriptString(context.tabId)}
-      set URL of targetTab to ${toAppleScriptString(url)}
-      return URL of targetTab
+      set targetWindow to first window whose id is ${toAppleScriptNumber(context.windowId)}
+      set URL of active tab of targetWindow to ${toAppleScriptString(url)}
+      return URL of active tab of targetWindow
     end tell
   `
 
@@ -353,9 +368,8 @@ async function waitForTabLoad(
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     const script = `
       tell application ${toAppleScriptString(context.browserApp)}
-        set targetWindow to first window whose id is ${toAppleScriptString(context.windowId)}
-        set targetTab to first tab of targetWindow whose id is ${toAppleScriptString(context.tabId)}
-        return (loading of targetTab as text) & ${toAppleScriptString(CONTEXT_ID_SEPARATOR)} & (URL of targetTab as text)
+        set targetWindow to first window whose id is ${toAppleScriptNumber(context.windowId)}
+        return (loading of active tab of targetWindow as text) & ${toAppleScriptString(CONTEXT_ID_SEPARATOR)} & (URL of active tab of targetWindow as text)
       end tell
     `
 
@@ -394,9 +408,8 @@ async function executeTabJavaScript(
 
   const script = `
     tell application ${toAppleScriptString(context.browserApp)}
-      set targetWindow to first window whose id is ${toAppleScriptString(context.windowId)}
-      set targetTab to first tab of targetWindow whose id is ${toAppleScriptString(context.tabId)}
-      tell targetTab
+      set targetWindow to first window whose id is ${toAppleScriptNumber(context.windowId)}
+      tell active tab of targetWindow
         execute javascript ${toAppleScriptString(javascript)}
       end tell
     end tell

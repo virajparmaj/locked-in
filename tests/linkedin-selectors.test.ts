@@ -94,6 +94,11 @@ describe('LinkedIn service contracts', () => {
     expect(src).not.toContain('active tab of first window')
   })
 
+  it('does not use index-of-tab to activate the automation tab', () => {
+    const src = readLinkedInServiceSource()
+    expect(src).not.toMatch(/index of targetTab/)
+  })
+
   it('verifies profile and overlay context before typing', () => {
     const src = readLinkedInServiceSource()
 

@@ -28,6 +28,13 @@ export function toAppleScriptString(value: string): string {
     .replace(/"/g, '\\"')}"`
 }
 
+export function toAppleScriptNumber(value: string): string {
+  if (!/^\d+$/.test(value)) {
+    throw new Error(`Expected numeric ID for AppleScript, got: ${value}`)
+  }
+  return value
+}
+
 /**
  * Execute an AppleScript string via osascript.
  * Returns stdout on success, throws on failure.

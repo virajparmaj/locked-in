@@ -1,6 +1,6 @@
 # LockedIn — Architecture & Design Notes
 
-_Last updated: 2026-03-25_
+_Last updated: 2026-03-30_
 
 ---
 
@@ -40,6 +40,33 @@ All LinkedIn URL handling is centralized here. Never bypass these helpers.
 | `normalizeLinkedInRecipientText(value)` | Strips noise words / zero-width chars for fuzzy name matching |
 
 **Source of truth:** the `linkedin_url` stored in the `contacts` table is always a normalized canonical URL. The `linkedin_slug` column is derived from it and kept in sync.
+
+---
+
+## AppleScript Utilities (`electron/utils/applescript.ts`)
+
+| Export | Purpose |
+|---|---|
+| `runAppleScript(script, timeoutMs?)` | Execute AppleScript via `osascript`. Returns stdout, throws on failure. Safety-kills process at `timeoutMs + 1000` ms. |
+| `runCommand(command, args, timeoutMs?)` | Execute a shell command (e.g., `open` for URL schemes). |
+| `toAppleScriptString(value)` | Escapes and quotes a string for safe AppleScript interpolation. |
+| `toAppleScriptNumber(value)` | Validates that a value is a pure digit string and returns it unquoted for AppleScript integer comparisons. Throws if non-numeric. |
+| `classifyAppleScriptError(rawMessage)` | (internal) Converts osascript stderr into user-friendly permission errors. |
+
+Never interpolate user-controlled strings directly into AppleScript — always use `toAppleScriptString` or `toAppleScriptNumber`.
+
+---
+
+## Browser Context Pinning (`electron/services/linkedin.service.ts`)
+
+After the profile page opens, the service acquires an `AutomationBrowserContext` containing `{ browserApp, windowId, tabId }`. All subsequent AppleScript operations target this exact window and tab — not "the active tab" of an arbitrary window.
+
+Key implementation details:
+
+- **Integer IDs:** Window and tab IDs are passed as bare integers via `toAppleScriptNumber()`, not quoted strings. AppleScript compares them with `is` equality against native integer IDs.
+- **Tab activation loop:** `focusAutomationContext` iterates `every tab of targetWindow` with an explicit `repeat` loop to find the target tab by ID, then sets `active tab index of targetWindow to i` using the positional index. The old `index of targetTab` approach was unreliable.
+- **Post-focus operations:** After `focusAutomationContext` succeeds, `navigateAutomationContextToUrl`, `waitForTabLoad`, and `executeTabJavaScript` all operate on `active tab of targetWindow` — relying on already-confirmed focus rather than re-querying by tab ID.
+- **Tab-not-found recovery:** If the automation tab is closed, `focusAutomationContext` throws `stale_selectors` and clears `automationContext` so the next operation re-acquires a fresh context.
 
 ---
 
@@ -128,7 +155,7 @@ Validation errors are now shown inline (field-level) rather than as a toast. Set
 |---|---|
 | `ipc-validation.test.ts` | Input validation for all IPC handlers |
 | `ipc-wrapper.test.ts` | Timeout behavior, freeze, pass-through events |
-| `linkedin-selectors.test.ts` | DOM selector strings + URL normalization |
+| `linkedin-selectors.test.ts` | DOM selector strings, URL normalization, browser context contracts (automation queue, window/tab pinning, no `index of targetTab`) |
 | `reminder.logic.test.ts` | Reminder scheduling, snooze, next-reminder calculation |
 | `scheduler.logic.test.ts` | Catch-up, retry backoff, mutex, past-due one-time logic |
 | `schedule-picker.test.ts` | Calendar math, time formatting, meridiem conversion |
