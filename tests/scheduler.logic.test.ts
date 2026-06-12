@@ -282,6 +282,26 @@ describe('scheduler execution semantics', () => {
     expect(ctx.db.updateLastFiredAt).toHaveBeenCalledTimes(1)
   })
 
+  it('does not retry when Chrome blocks JavaScript from Apple Events', async () => {
+    const ctx = await setupSchedulerTest({ maxRetries: 2 })
+    const schedule = makeSchedule({ scheduleType: 'weekly', dayOfWeek: 6 })
+    ctx.setSchedules([schedule])
+    ctx.sendLinkedInMessage.mockResolvedValueOnce({
+      success: false,
+      dryRun: false,
+      error:
+        "Chrome is blocking JavaScript automation. In your browser's menu bar, " +
+        'enable View > Developer > Allow JavaScript from Apple Events, then try again.'
+    })
+
+    ctx.scheduler.registerJob(schedule)
+    await ctx.scheduledCallbacks[0](new Date('2025-03-15T15:00:00.000Z'))
+
+    expect(ctx.sendLinkedInMessage).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(0)
+    expect(ctx.db.insertRunLog).toHaveBeenCalledTimes(1)
+  })
+
   it('keeps manual test sends non-consuming for one-time schedules', async () => {
     const ctx = await setupSchedulerTest()
     const schedule = makeSchedule({

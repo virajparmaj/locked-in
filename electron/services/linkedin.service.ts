@@ -170,6 +170,10 @@ function classifyLinkedInError(error: unknown): LinkedInAutomationError {
     return makeError('permission_issue', rawMessage)
   }
 
+  if (/Allow JavaScript from Apple Events/i.test(rawMessage) || /javascript through applescript is turned off/i.test(rawMessage)) {
+    return makeError('permission_issue', rawMessage)
+  }
+
   if (/not logged in/i.test(rawMessage) || /login wall/i.test(rawMessage)) {
     return makeError('login_wall', rawMessage)
   }
@@ -1073,6 +1077,34 @@ export async function sendLinkedInMessage(
 }
 
 /**
+ * Verify the browser allows `execute javascript` from Apple Events.
+ * Chrome ships with this off (View > Developer > Allow JavaScript from Apple Events),
+ * and without it every send fails — so surface it during the access check.
+ */
+async function checkJavaScriptFromAppleEvents(browserApp: string): Promise<AccessibilityStatus> {
+  const script = `
+    tell application ${toAppleScriptString(browserApp)}
+      if (count of windows) is 0 then return "no_windows"
+      tell active tab of front window
+        execute javascript "1 + 1"
+      end tell
+    end tell
+  `
+
+  try {
+    await runAppleScript(script, 5000)
+    return { granted: true }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (/Allow JavaScript from Apple Events/i.test(message)) {
+      return { granted: false, error: message }
+    }
+    // Other failures (e.g. a chrome:// page in the active tab) don't prove the setting is off.
+    return { granted: true }
+  }
+}
+
+/**
  * Check if the configured browser is accessible via AppleScript.
  */
 export async function checkChromeAccess(): Promise<AccessibilityStatus> {
@@ -1080,7 +1112,7 @@ export async function checkChromeAccess(): Promise<AccessibilityStatus> {
     const settings = getSettings()
     const browserApp = sanitizeBrowserAppName(settings.browserApp)
     await runAppleScript(`tell application ${toAppleScriptString(browserApp)} to return version`, 5000)
-    return { granted: true }
+    return await checkJavaScriptFromAppleEvents(browserApp)
   } catch (error) {
     const classified = classifyLinkedInError(error)
     return { granted: false, error: classified.message }

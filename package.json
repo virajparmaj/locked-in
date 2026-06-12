@@ -66,12 +66,18 @@
       {
         "from": "resources",
         "to": "resources",
-        "filter": ["**/*"]
+        "filter": ["**/*", "!entitlements.mac.plist"]
       }
     ],
     "mac": {
       "icon": "resources/icon.icns",
       "category": "public.app-category.productivity",
+      "hardenedRuntime": true,
+      "entitlements": "resources/entitlements.mac.plist",
+      "entitlementsInherit": "resources/entitlements.mac.plist",
+      "extendInfo": {
+        "NSAppleEventsUsageDescription": "LockedIn controls your browser to open LinkedIn profiles and send the messages you schedule."
+      },
       "target": [
         {
           "target": "dmg",

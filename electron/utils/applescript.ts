@@ -2,13 +2,20 @@ import { execFile } from 'child_process'
 
 const ACCESSIBILITY_ERROR_RE = /not allowed assistive access|1002/i
 const AUTOMATION_PERMISSION_RE = /not authorized to send apple events|automation permission|not permitted to send apple events|-1743/i
+const CHROME_JS_DISABLED_RE = /javascript through applescript is turned off/i
 
-function classifyAppleScriptError(rawMessage: string): Error {
+export function classifyAppleScriptError(rawMessage: string): Error {
   const message = rawMessage.trim() || 'AppleScript execution failed'
 
   if (ACCESSIBILITY_ERROR_RE.test(message)) {
     return new Error(
       'Accessibility permission not granted. Go to System Settings > Privacy & Security > Accessibility and add this app.'
+    )
+  }
+
+  if (CHROME_JS_DISABLED_RE.test(message)) {
+    return new Error(
+      "Chrome is blocking JavaScript automation. In your browser's menu bar, enable View > Developer > Allow JavaScript from Apple Events, then try again."
     )
   }
 

@@ -45,6 +45,7 @@ type PastDueOneTimeAction = 'missed' | 'recover' | 'consume'
 const NON_RETRYABLE_PATTERNS = [
   'not allowed assistive access',
   'Accessibility permission',
+  'Allow JavaScript from Apple Events',
   'Screen locked',
   'Screen saver is running',
   'not logged in',

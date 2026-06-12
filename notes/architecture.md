@@ -1,6 +1,6 @@
 # LockedIn — Architecture & Design Notes
 
-_Last updated: 2026-03-30_
+_Last updated: 2026-06-11_
 
 ---
 
@@ -51,7 +51,7 @@ All LinkedIn URL handling is centralized here. Never bypass these helpers.
 | `runCommand(command, args, timeoutMs?)` | Execute a shell command (e.g., `open` for URL schemes). |
 | `toAppleScriptString(value)` | Escapes and quotes a string for safe AppleScript interpolation. |
 | `toAppleScriptNumber(value)` | Validates that a value is a pure digit string and returns it unquoted for AppleScript integer comparisons. Throws if non-numeric. |
-| `classifyAppleScriptError(rawMessage)` | (internal) Converts osascript stderr into user-friendly permission errors. |
+| `classifyAppleScriptError(rawMessage)` | Converts osascript stderr into user-friendly permission errors. Detects Accessibility denial, Automation denial, and Chrome's "JavaScript through AppleScript is turned off" (View > Developer > Allow JavaScript from Apple Events). Exported for tests. |
 
 Never interpolate user-controlled strings directly into AppleScript — always use `toAppleScriptString` or `toAppleScriptNumber`.
 
@@ -85,7 +85,7 @@ Run `tests/linkedin-selectors.test.ts` to verify selectors are still valid after
 
 ### Failure Codes
 Non-retryable (hard stop, no backoff):
-- `permission_issue` — Accessibility not granted
+- `permission_issue` — Accessibility/Automation not granted, or Chrome's "Allow JavaScript from Apple Events" is off
 - `login_wall` — user not logged in
 - `rate_limited` — LinkedIn throttle
 
@@ -162,6 +162,27 @@ Validation errors are now shown inline (field-level) rather than as a toast. Set
 | `toast-contract.test.ts` | Toast variant contracts |
 
 Run all: `npm run verify` (tests + both typechecks).
+
+---
+
+## Browser Access Preflight (`checkChromeAccess`)
+
+The Settings-tab access check runs two probes against the configured browser:
+
+1. **Reachability** — `tell application "<browser>" to return version` (triggers the macOS Automation prompt on first run; launches the browser if needed).
+2. **JS-from-Apple-Events** — `checkJavaScriptFromAppleEvents()` executes a harmless `1 + 1` in the active tab of the front window. If Chrome reports "Executing JavaScript through AppleScript is turned off", the check returns `granted: false` with instructions to enable **View > Developer > Allow JavaScript from Apple Events**. Other JS errors (e.g. a `chrome://` page in the active tab) or zero open windows do **not** fail the check — they don't prove the setting is off.
+
+Chrome ships with JS-from-Apple-Events disabled, so this is the most common first-run blocker. The error is classified as `permission_issue` (non-retryable) and the message phrase `Allow JavaScript from Apple Events` is in the scheduler's `NON_RETRYABLE_PATTERNS`, so a send that hits it fails once instead of burning the retry backoff.
+
+---
+
+## Packaging & Distribution (macOS)
+
+- `npm run dist:dmg` → `dist/LockedIn-<version>-arm64.dmg` via electron-builder (config in `package.json` `build` field).
+- **Entitlements:** `resources/entitlements.mac.plist` — Electron hardened-runtime defaults plus `com.apple.security.automation.apple-events` (required for AppleScript automation under hardened runtime). Excluded from `extraResources` so it isn't shipped inside the app.
+- **Info.plist:** `mac.extendInfo` injects `NSAppleEventsUsageDescription` so the macOS Automation consent prompt is correctly attributed to LockedIn.
+- **Signing:** falls back to an ad-hoc signature when no Developer ID identity is in the keychain. Consequences: on macOS 15+ downloaded builds need System Settings > Privacy & Security > "Open Anyway" (right-click → Open no longer bypasses Gatekeeper), and TCC grants (Accessibility/Automation) are tied to the signature, so they may need re-granting after each rebuild. Proper distribution requires Developer ID signing + notarization.
+- **better-sqlite3** is rebuilt for Electron by electron-builder and `asarUnpack`ed; tray/app icons ship via `extraResources` and resolve through `getResourcePath()` in `electron/main.ts`.
 
 ---
 

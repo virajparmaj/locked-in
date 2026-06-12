@@ -114,6 +114,19 @@ describe('LinkedIn service contracts', () => {
     expect(src).toContain('send_confirmation_missing')
   })
 
+  it('treats blocked JavaScript-from-Apple-Events as a non-retryable permission issue', () => {
+    const src = readLinkedInServiceSource()
+
+    expect(src).toContain('Allow JavaScript from Apple Events')
+    expect(src).toMatch(/Allow JavaScript from Apple Events[\s\S]*?permission_issue|permission_issue[\s\S]*?Allow JavaScript from Apple Events/)
+  })
+
+  it('preflights JavaScript execution in the browser access check', () => {
+    const src = readLinkedInServiceSource()
+
+    expect(src).toContain('checkJavaScriptFromAppleEvents')
+  })
+
   it('keeps class-based selectors for compose automation', () => {
     const src = readLinkedInServiceSource()
 
